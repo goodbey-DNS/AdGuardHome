@@ -1,0 +1,32 @@
+name: 拉取官方最新 amd64 包
+
+on:
+  schedule:
+    - cron: '0 */6 * * *'   # 每 6 小时
+  workflow_dispatch:
+
+jobs:
+  pull:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: 获取官方最新版本
+        id: v
+        run: echo "tag=$(curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest | jq -r .tag_name)" >> $GITHUB_OUTPUT
+
+      - name: 下载官方 amd64 包（带加速）
+        run: |
+          VER=${{ steps.v.outputs.tag }}
+          wget --show-progress -O adguard.tar.gz \
+            https://gh-proxy.cc/https://github.com/AdguardTeam/AdGuardHome/releases/download/$VER/AdGuardHome_linux_amd64.tar.gz
+
+      - name: 发布到本仓库 latest Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: latest
+          name: "AdGuardHome ${{ steps.v.outputs.tag }}"
+          files: adguard.tar.gz
+          body: "Upstream ${{ steps.v.outputs.tag }}"
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
