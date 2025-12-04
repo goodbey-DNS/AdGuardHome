@@ -25,10 +25,11 @@ jobs:
           echo "官方下载：$URL"
           wget --show-progress -O adguard.tar.gz "$URL"
 
-      - name: 校验大小（防止下到404页）
+      - name: 校验大小（官方瘦身后真包约 11 MB）
         run: |
           SIZE=$(stat -c%s adguard.tar.gz)
-          if [ "$SIZE" -lt 20000000 ]; then
+          # 真包 10 MB 以上即合格，防止下到 <1 KB 的 404 页
+          if [ "$SIZE" -lt 10000000 ]; then
             echo "❌ 文件过小(${SIZE}B)，可能下载失败！"
             exit 1
           fi
