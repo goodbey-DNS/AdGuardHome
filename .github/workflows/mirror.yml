@@ -1,9 +1,18 @@
-name: 镜像官方最新包（无加速）
+name: 镜像官方最新包（最终版）
 
 on:
   schedule:
-    - cron: '0 */6 * * *'   # 每 6 小时检查一次
-  workflow_dispatch:        # 手动触发
+    - cron: '0 */6 * * *'
+  workflow_dispatch:
+    inputs:
+      arch:
+        description: '架构'
+        required: false
+        default: 'amd64'
+      version:
+        description: '指定版本（留空则最新）'
+        required: false
+        default: ''
 
 jobs:
   mirror:
@@ -11,35 +20,40 @@ jobs:
     permissions:
       contents: write
     steps:
-      - name: 获取官方最新版本号
+      - name: 获取版本
         id: v
         run: |
-          VER=$(curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest | jq -r .tag_name)
+          VER="${{ github.event.inputs.version }}"
+          [ -z "$VER" ] && VER=$(curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest | jq -r .tag_name)
           echo "tag=$VER" >> $GITHUB_OUTPUT
-          echo "官方版本 ==> $VER"
+          echo "arch=${{ github.event.inputs.arch }}" >> $GITHUB_OUTPUT
 
-      - name: 官方直链下载（无加速）
+      - name: 官方直链下载
         run: |
           VER=${{ steps.v.outputs.tag }}
-          URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/$VER/AdGuardHome_linux_amd64.tar.gz"
-          echo "官方下载：$URL"
+          ARCH=${{ steps.v.outputs.arch }}
+          URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/$VER/AdGuardHome_linux_${ARCH}.tar.gz"
+          echo "下载：$URL"
           wget --show-progress -O adguard.tar.gz "$URL"
 
-      - name: 校验大小（官方瘦身后真包约 11 MB）
+      - name: 校验大小（≥10 MB 为真包）
         run: |
           SIZE=$(stat -c%s adguard.tar.gz)
-          # 真包 10 MB 以上即合格，防止下到 <1 KB 的 404 页
-          if [ "$SIZE" -lt 10000000 ]; then
-            echo "❌ 文件过小(${SIZE}B)，可能下载失败！"
-            exit 1
-          fi
-          echo "✅ 下载成功，大小：$(numfmt --to=iec-i $SIZE)"
+          [ "$SIZE" -lt 10000000 ] && { echo "❌ 文件过小(${SIZE}B)"; exit 1; }
+          echo "✅ 包大小：$(numfmt --to=iec-i $SIZE)"
 
-      - name: 发布到本仓库 latest Release
+      - name: 删除旧资产（避免残留）
+        uses: mknejp/delete-release-assets@v1
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          tag: latest
+          assets: "*.tar.gz"
+
+      - name: 创建/覆盖 latest Release
         uses: softprops/action-gh-release@v1
         with:
           tag_name: latest
-          name: "AdGuardHome ${{ steps.v.outputs.tag }}"
+          name: "AdGuardHome ${{ steps.v.outputs.tag }} (${{ steps.v.outputs.arch }})"
           files: adguard.tar.gz
           body: "Upstream ${{ steps.v.outputs.tag }}"
         env:
