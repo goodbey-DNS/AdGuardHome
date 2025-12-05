@@ -24,9 +24,11 @@ jobs:
         id: v
         run: |
           VER="${{ github.event.inputs.version }}"
+          ARCH="${{ github.event.inputs.arch }}"
           [ -z "$VER" ] && VER=$(curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest | jq -r .tag_name)
+          [ -z "$ARCH" ] && ARCH="amd64"
           echo "tag=$VER" >> $GITHUB_OUTPUT
-          echo "arch=${{ github.event.inputs.arch }}" >> $GITHUB_OUTPUT
+          echo "arch=$ARCH" >> $GITHUB_OUTPUT
 
       - name: 官方直链下载
         run: |
