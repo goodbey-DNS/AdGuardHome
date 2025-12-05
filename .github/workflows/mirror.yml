@@ -95,7 +95,7 @@ jobs:
           echo "✅ 文件大小校验通过: $(numfmt --to=iec-i $SIZE)"
 
       - name: 清理旧版本资产
-        uses: mknejp/delete-release-assets@v1.0.0  # ← 修复点：改为 v1.0.0
+        uses: mknejp/delete-release-assets@v1  # ← 唯一改动点
         continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
