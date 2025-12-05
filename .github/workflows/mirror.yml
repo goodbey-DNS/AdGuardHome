@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       arch:
-        description: '架构'
+        description: '架构（amd64, arm64, armv6, armv7）'
         required: false
         default: 'amd64'
       version:
@@ -14,49 +14,117 @@ on:
         required: false
         default: ''
 
+concurrency:
+  # 确保同一时间只有一个镜像任务在运行，避免发布冲突
+  group: mirror-adguardhome
+  cancel-in-progress: false # 队列化执行，不中断正在运行的任务
+
 jobs:
   mirror:
     runs-on: ubuntu-latest
     permissions:
-      contents: write
+      contents: write # 需要写入权限来创建/更新 Release
     steps:
-      - name: 获取版本
+      - name: 获取版本与架构
         id: v
         run: |
+          set -e # 任何命令失败立即退出，防止错误扩散
+          
           VER="${{ github.event.inputs.version }}"
           ARCH="${{ github.event.inputs.arch }}"
-          [ -z "$VER" ] && VER=$(curl -s https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest | jq -r .tag_name)
-          [ -z "$ARCH" ] && ARCH="amd64"
+          
+          # 处理版本：若未指定则从 GitHub API 获取最新版
+          if [ -z "$VER" ]; then
+            echo "未指定版本，正在从 GitHub API 获取最新版本..."
+            # -f 参数让 curl 对 HTTP 错误码 (如 404, 403) 也返回非零退出码
+            API_RESPONSE=$(curl -sSf https://api.github.com/repos/AdguardTeam/AdGuardHome/releases/latest)
+            VER=$(echo "$API_RESPONSE" | jq -r .tag_name)
+            
+            # 验证获取到的版本号是否有效
+            if [ -z "$VER" ] || [ "$VER" = "null" ]; then
+              echo "::error::无法获取最新版本信息，API 响应无效或仓库结构变更"
+              exit 1
+            fi
+            echo "✅ 获取到最新版本: $VER"
+          else
+            echo "✅ 使用指定版本: $VER"
+          fi
+          
+          # 处理架构：若未指定则默认 amd64
+          ARCH="${ARCH:-amd64}"
+          
+          # 验证架构是否有效，防止用户输入错误导致 404
+          VALID_ARCHS=("amd64" "arm64" "armv6" "armv7")
+          if [[ ! " ${VALID_ARCHS[*]} " =~ " ${ARCH} " ]]; then
+            echo "::error::无效的架构: $ARCH"
+            echo "支持的架构为: ${VALID_ARCHS[*]}"
+            exit 1
+          fi
+          echo "✅ 使用架构: $ARCH"
+          
+          # 将结果输出给后续步骤使用
           echo "tag=$VER" >> $GITHUB_OUTPUT
           echo "arch=$ARCH" >> $GITHUB_OUTPUT
 
-      - name: 官方直链下载
+      - name: 从官方源下载
         run: |
-          VER=${{ steps.v.outputs.tag }}
-          ARCH=${{ steps.v.outputs.arch }}
-          URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/$VER/AdGuardHome_linux_${ARCH}.tar.gz"
-          echo "下载：$URL"
+          set -e
+          
+          VER="${{ steps.v.outputs.tag }}"
+          ARCH="${{ steps.v.outputs.arch }}"
+          URL="https://github.com/AdguardTeam/AdGuardHome/releases/download/${VER}/AdGuardHome_linux_${ARCH}.tar.gz"
+          
+          echo "⬇️ 开始下载: $URL"
           wget --show-progress -O adguard.tar.gz "$URL"
+          
+          # 验证文件已成功下载且非空
+          if [ ! -s adguard.tar.gz ]; then
+            echo "::error::下载失败，文件不存在或为空（可能 URL 错误或网络问题）"
+            exit 1
+          fi
+          echo "✅ 下载完成，文件已保存"
 
-      - name: 校验大小（≥10 MB 为真包）
+      - name: 校验文件大小（≥10 MB）
         run: |
+          set -e
+          
+          # 再次确认文件存在
+          if [ ! -s adguard.tar.gz ]; then
+            echo "::error::文件 adguard.tar.gz 不存在或为空"
+            exit 1
+          fi
+          
           SIZE=$(stat -c%s adguard.tar.gz)
-          [ "$SIZE" -lt 10000000 ] && { echo "❌ 文件过小(${SIZE}B)"; exit 1; }
-          echo "✅ 包大小：$(numfmt --to=iec-i $SIZE)"
+          MIN_SIZE=10000000 # 10MB
+          
+          # 文件过小通常意味着下载了错误页面或内容不完整
+          if [ "$SIZE" -lt "$MIN_SIZE" ]; then
+            echo "::error::文件大小校验失败：${SIZE} B（小于 ${MIN_SIZE} B），可能不是有效的 AdGuard Home 安装包"
+            exit 1
+          fi
+          
+          echo "✅ 文件大小校验通过: $(numfmt --to=iec-i $SIZE)"
 
-      - name: 删除旧资产（避免残留）
-        uses: mknejp/delete-release-assets@v1
+      - name: 清理旧版本资产
+        # 此步骤在首次运行时可能因 'latest' Release 不存在而失败，因此允许错误继续执行
+        uses: mknejp/delete-release-assets@v1.0.1 # 固定版本以保证稳定性
+        continue-on-error: true
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
           tag: latest
           assets: "*.tar.gz"
 
-      - name: 创建/覆盖 latest Release
-        uses: softprops/action-gh-release@v1
+      - name: 发布到 latest Release
+        # 使用 v2 版本以获得更好的更新支持和稳定性
+        uses: softprops/action-gh-release@v2.0.8
         with:
           tag_name: latest
           name: "AdGuardHome ${{ steps.v.outputs.tag }} (${{ steps.v.outputs.arch }})"
           files: adguard.tar.gz
-          body: "Upstream ${{ steps.v.outputs.tag }}"
+          body: |
+            📦 **上游版本**: ${{ steps.v.outputs.tag }}
+            🏗️ **架构**: ${{ steps.v.outputs.arch }}
+            ⏱️ **发布时间**: ${{ github.event.repository.updated_at }}
+          make_latest: true # 明确将此 Release 标记为仓库主页的 "Latest release"
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
